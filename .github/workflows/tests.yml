@@ -1,0 +1,37 @@
+name: tests
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run the test suite
+        run: pytest --cov=app --cov-report=term-missing
+
+      - name: Fail if a secret was committed
+        run: |
+          if git ls-files | grep -E '(\.pem$|^\.env$|^keys/)'; then
+            echo "A credential file is tracked by git."
+            exit 1
+          fi
+          echo "No credential files tracked."
