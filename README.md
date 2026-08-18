@@ -160,7 +160,11 @@ gitignored.
 1. Log into https://web.sandbox.starkbank.com
 2. Menu, then Integrations, then New Project
 3. Upload `keys/public-key.pem`
-4. Copy the resulting Project ID
+4. Fill in the allowed IPs. The field is required, and it is the source address
+   your code calls *from*, not the webhook URL. Locally that is `curl -4 ifconfig.me`;
+   deployed it is the platform's egress address. A mismatch fails every request
+   with what looks like a credential error.
+5. Copy the resulting Project ID
 
 ### 3. Configure the environment
 
@@ -215,22 +219,40 @@ Chosen because the free tiers that scale to zero introduce a cold start, and a
 cold start during a webhook delivery is a dropped event. The configuration keeps
 one machine warm and mounts a volume so the SQLite file survives restarts.
 
+This app runs at **https://stark-bank.fly.dev**. To deploy your own copy, pick a
+different app name and update `fly.toml`:
+
 ```bash
 fly auth login
-fly apps create your-app-name          # then update the app name in fly.toml
+fly apps create your-app-name
 fly volumes create starkbank_data --size 1 --region gru
+```
 
-fly secrets set \
-  STARKBANK_PROJECT_ID="your_project_id" \
-  STARKBANK_PRIVATE_KEY="$(cat keys/private-key.pem)"
+The private key is multi-line, so `fly secrets set` cannot take it directly.
+Import it with the newlines escaped — `config.py` unescapes them on read:
 
+```bash
+{
+  printf 'STARKBANK_PROJECT_ID=%s\n' "your_project_id"
+  printf 'STARKBANK_PRIVATE_KEY=%s\n' "$(sed -z 's/\n/\\n/g' keys/private-key.pem)"
+} | fly secrets import
+```
+
+```bash
 fly deploy
+```
+
+The Project restricts API access by source IP, so add the machine's egress
+address to the allowlist or every call fails as if the credential were wrong:
+
+```bash
+fly ssh console -C "curl -s https://api.ipify.org"
 ```
 
 Then point the webhook at the deployed URL:
 
 ```bash
-python scripts/manage_webhook.py register https://your-app-name.fly.dev
+fly ssh console -C "python scripts/manage_webhook.py register https://your-app-name.fly.dev"
 ```
 
 ### Any other container platform

@@ -1,8 +1,6 @@
-# Fly.io configuration.
-#
-# Rename the app before deploying: fly apps create <your-name>
+# Fly.io configuration. Deployed at https://stark-bank.fly.dev
 
-app = "starkbank-invoice-transfer"
+app = "stark-bank"
 primary_region = "gru"
 
 [build]
