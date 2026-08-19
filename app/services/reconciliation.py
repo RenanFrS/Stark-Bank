@@ -117,3 +117,58 @@ def _acknowledge(event) -> None:
             "could not mark event as delivered",
             extra={"event_id": str(event.id)},
         )
+
+
+def sweep_pending_transfers(
+    stale_after_minutes: int | None = None, limit: int = 100
+) -> dict[str, int]:
+    """Pull the outcome of transfers whose settlement event never arrived.
+
+    The transfer webhook is the fast path; this is the guarantee. A send left
+    unresolved would otherwise be counted as neither paid nor retryable.
+    """
+    if stale_after_minutes is None:
+        stale_after_minutes = get_settings().reconciliation_stale_after_minutes
+
+    with session_scope() as session:
+        pending = event_repository.pending_transfers(
+            session, stale_after_minutes=stale_after_minutes, limit=limit
+        )
+
+    summary: dict[str, int] = {}
+    for event_id, transfer_id in pending:
+        try:
+            transfer = starkbank.transfer.get(transfer_id)
+        except Exception:
+            logger.warning(
+                "could not fetch transfer for settlement",
+                extra={"event_id": event_id, "transfer_id": transfer_id},
+            )
+            summary["unfetchable"] = summary.get("unfetchable", 0) + 1
+            continue
+
+        status = getattr(transfer, "status", None)
+        if status == "success":
+            with session_scope() as session:
+                event_repository.settle_transfer(
+                    session, transfer_id=transfer_id, succeeded=True, reason=""
+                )
+            summary["settled"] = summary.get("settled", 0) + 1
+        elif status in ("failed", "canceled"):
+            with session_scope() as session:
+                event_repository.settle_transfer(
+                    session,
+                    transfer_id=transfer_id,
+                    succeeded=False,
+                    reason=f"transfer {status}",
+                )
+            summary["reopened"] = summary.get("reopened", 0) + 1
+        else:
+            summary["still_pending"] = summary.get("still_pending", 0) + 1
+
+    if pending:
+        logger.info(
+            "transfer settlement sweep finished",
+            extra={"candidates": len(pending), "summary": summary},
+        )
+    return summary

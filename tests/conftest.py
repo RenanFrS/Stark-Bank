@@ -75,7 +75,9 @@ class FakeInvoice:
 @dataclass
 class FakeLog:
     type: str
-    invoice: FakeInvoice | None
+    invoice: FakeInvoice | None = None
+    transfer: "FakeTransfer | None" = None
+    errors: list | None = None
 
 
 @dataclass
@@ -88,6 +90,7 @@ class FakeEvent:
 @dataclass
 class FakeTransfer:
     id: str
+    status: str = "created"
 
 
 @pytest.fixture

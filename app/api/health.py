@@ -30,11 +30,16 @@ def run_status() -> dict:
                 .group_by(ProcessedEvent.status)
             ).all()
         )
-        transferred_total = session.execute(
-            select(func.coalesce(func.sum(ProcessedEvent.net_amount), 0)).where(
-                ProcessedEvent.status == EventStatus.TRANSFERRED
-            )
-        ).scalar_one()
+        def _sum_for(status):
+            return session.execute(
+                select(func.coalesce(func.sum(ProcessedEvent.net_amount), 0)).where(
+                    ProcessedEvent.status == status
+                )
+            ).scalar_one()
+
+        # Only a settled transfer is money that actually moved.
+        transferred_total = _sum_for(EventStatus.TRANSFERRED)
+        in_flight_total = _sum_for(EventStatus.SENT)
 
     return {
         "environment": settings.starkbank_environment,
@@ -45,4 +50,5 @@ def run_status() -> dict:
         },
         "events": by_status,
         "transferred_amount_cents": int(transferred_total),
+        "in_flight_amount_cents": int(in_flight_total),
     }

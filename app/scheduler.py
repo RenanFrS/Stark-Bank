@@ -33,6 +33,10 @@ def _safe_reconcile() -> None:
         reconciliation.sweep_local_ledger()
     except Exception:
         logger.exception("local ledger sweep raised")
+    try:
+        reconciliation.sweep_pending_transfers()
+    except Exception:
+        logger.exception("transfer settlement sweep raised")
 
 
 def start() -> BackgroundScheduler:

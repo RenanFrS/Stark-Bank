@@ -30,20 +30,29 @@ but the README does not state when the field is populated or whether it can be
 `None` before the invoice is paid. The implementation defensively coerces a
 missing value to zero.
 
-**`external_id` is offered as an idempotency key but cannot be queried.** The
-docs recommend `external_id` "so we can block anything you send twice by
-mistake", and `Transfer` accepts it. But `transfer.query` takes
-`limit, after, before, transaction_ids, status, tax_id, sort, tags, ids` — there
-is no `external_ids` filter, while `invoice.query` and `transfer.get` offer no
-route either. So after an ambiguous failure, an integrator cannot ask "did my
-transfer land?" using the very key meant to make the operation idempotent.
+**`external_id` is enforced as unique, but there is no way to query by it.**
+A repeated `external_id` is correctly refused. The problem is what happens next:
+`transfer.query` accepts `limit, after, before, transaction_ids, status, tax_id,
+sort, tags, ids` and offers no `external_ids` filter, so after an ambiguous
+failure an integrator cannot ask "did my earlier attempt land?" using the very
+key meant to make the operation idempotent.
 
-Worse, the duplicate rejection arrives as `InputErrors`, the same class used for
-a malformed request. Code that correctly refuses to retry `InputErrors` will
-therefore record an already-successful payment as a permanent failure. The
-workaround here is to mirror the id into a tag and query by `tags`, but that is
-a convention the integrator has to invent. An `external_ids` filter, or a
-distinct error code for a duplicate key, would close this.
+That gap cost real time here. A retry that reuses the `external_id` is rejected,
+which is right, but the rejection arrives as `InputErrors` carrying the bare
+string `'Duplicated transfer'` — with `code` and `message` both `None`, unlike
+every other error the SDK raises. Since `InputErrors` is also what a malformed
+request produces, code that correctly refuses to retry `InputErrors` will record
+an already-successful payment as a permanent failure.
+
+Two things would have made this obvious rather than a multi-hour hunt: an
+`external_ids` filter on `transfer.query`, and a distinct error code for a
+duplicate key. The workaround adopted here is to scope the `external_id` per
+attempt and keep a stable `invoice-{id}` tag, which *is* queryable, so a retry
+can still tell "already paid" from "never sent".
+
+Worth noting the failure is asynchronous: `transfer.create` returns an id and
+status `created`, and only later does the transfer move to `failed`. Treating
+creation as success makes an integration report money it never moved.
 
 **The ECDSA implementation is solid, with one caveat.** `starkbank-ecdsa` derives
 the nonce via RFC 6979, which removes the nonce-reuse class of key recovery; it

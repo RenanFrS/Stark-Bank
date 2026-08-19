@@ -20,7 +20,8 @@ from app.logging_config import configure_logging  # noqa: E402
 from app.starkbank_client import configure_sdk  # noqa: E402
 
 WEBHOOK_PATH = "/webhooks/starkbank"
-SUBSCRIPTIONS = ["invoice"]
+# "transfer" carries the outcome: a created transfer can still fail.
+SUBSCRIPTIONS = ["invoice", "transfer"]
 
 
 def register(base_url: str) -> None:

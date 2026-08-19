@@ -19,14 +19,15 @@ def _outcome(net=9_800):
 
 def test_credited_event_creates_a_transfer(monkeypatch, credited_event):
     monkeypatch.setattr(
-        event_processor, "send_invoice_proceeds", lambda _invoice: _outcome()
+        event_processor, "send_invoice_proceeds", lambda _invoice, **_k: _outcome()
     )
 
-    assert process_event(credited_event()) is ProcessResult.TRANSFERRED
+    # Accepted by the API, not yet settled: the outcome arrives later.
+    assert process_event(credited_event()) is ProcessResult.SENT
 
     with session_scope() as session:
         record = event_repository.get(session, "event-1")
-        assert record.status == EventStatus.TRANSFERRED
+        assert record.status == EventStatus.SENT
         assert record.transfer_id == "transfer-1"
         assert record.net_amount == 9_800
 
@@ -34,7 +35,7 @@ def test_credited_event_creates_a_transfer(monkeypatch, credited_event):
 def test_duplicate_delivery_does_not_transfer_twice(monkeypatch, credited_event):
     calls = 0
 
-    def fake_send(_invoice):
+    def fake_send(_invoice, **_kwargs):
         nonlocal calls
         calls += 1
         return _outcome()
@@ -44,7 +45,7 @@ def test_duplicate_delivery_does_not_transfer_twice(monkeypatch, credited_event)
     first = process_event(credited_event())
     second = process_event(credited_event())
 
-    assert first is ProcessResult.TRANSFERRED
+    assert first is ProcessResult.SENT
     assert second is ProcessResult.DUPLICATE
     assert calls == 1
 
@@ -52,7 +53,7 @@ def test_duplicate_delivery_does_not_transfer_twice(monkeypatch, credited_event)
 def test_non_credited_log_types_are_skipped(monkeypatch, credited_event):
     called = False
 
-    def fake_send(_invoice):
+    def fake_send(_invoice, **_kwargs):
         nonlocal called
         called = True
         return _outcome()
@@ -89,7 +90,7 @@ def test_credited_log_without_invoice_is_skipped():
 
 
 def test_failed_transfer_is_recorded_as_failed(monkeypatch, credited_event):
-    def fake_send(_invoice):
+    def fake_send(_invoice, **_kwargs):
         raise TransferFailed("api rejected the request")
 
     monkeypatch.setattr(event_processor, "send_invoice_proceeds", fake_send)
@@ -104,7 +105,7 @@ def test_failed_transfer_is_recorded_as_failed(monkeypatch, credited_event):
 
 def test_claim_is_recorded_with_its_source(monkeypatch, credited_event):
     monkeypatch.setattr(
-        event_processor, "send_invoice_proceeds", lambda _invoice: _outcome()
+        event_processor, "send_invoice_proceeds", lambda _invoice, **_k: _outcome()
     )
 
     process_event(credited_event(), source="reconciliation")

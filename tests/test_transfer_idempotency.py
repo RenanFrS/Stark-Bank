@@ -152,3 +152,50 @@ def test_a_real_input_error_still_fails(monkeypatch):
 
     with pytest.raises(TransferFailed):
         send_invoice_proceeds(FakeInvoice(id="inv-15", amount=5_000, fee=0))
+
+
+def test_each_attempt_uses_a_fresh_external_id(monkeypatch):
+    """A retry must not reuse the external_id of a failed attempt.
+
+    The API rejects the repeat as a duplicate, so every retry was guaranteed to
+    fail while the invoice tag still identifies the payment.
+    """
+    seen = []
+
+    monkeypatch.setattr(
+        transfer_service.starkbank.transfer, "query", lambda tags: iter([])
+    )
+
+    def capture(transfers):
+        seen.append(transfers[0].external_id)
+        return [FakeTransfer(id=f"t{len(seen)}")]
+
+    monkeypatch.setattr(transfer_service.starkbank.transfer, "create", capture)
+
+    inv = FakeInvoice(id="inv-retry", amount=5_000, fee=0)
+    transfer_service.send_invoice_proceeds(inv, attempt=1)
+    transfer_service.send_invoice_proceeds(inv, attempt=2)
+
+    assert len(set(seen)) == 2, f"external_ids repeated across attempts: {seen}"
+
+
+def test_the_invoice_tag_is_stable_across_attempts(monkeypatch):
+    """The tag is what identifies the payment, so it must not change."""
+    tags_seen = []
+
+    monkeypatch.setattr(
+        transfer_service.starkbank.transfer, "query", lambda tags: iter([])
+    )
+
+    def capture(transfers):
+        tags_seen.append(transfers[0].tags)
+        return [FakeTransfer(id="t")]
+
+    monkeypatch.setattr(transfer_service.starkbank.transfer, "create", capture)
+
+    inv = FakeInvoice(id="inv-tag", amount=5_000, fee=0)
+    transfer_service.send_invoice_proceeds(inv, attempt=1)
+    transfer_service.send_invoice_proceeds(inv, attempt=7)
+
+    assert "invoice-inv-tag" in tags_seen[0]
+    assert "invoice-inv-tag" in tags_seen[1]

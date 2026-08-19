@@ -24,14 +24,14 @@ def _outcome(net=9_800):
     )
 
 
-def _always_fails(_invoice):
+def _always_fails(_invoice, **_kwargs):
     raise TransferFailed("sandbox returned 500")
 
 
 def test_failed_transfer_is_attempted_again(monkeypatch, credited_event):
     attempts = []
 
-    def flaky(_invoice):
+    def flaky(_invoice, **_kwargs):
         attempts.append(1)
         raise TransferFailed("sandbox returned 500")
 
@@ -45,7 +45,7 @@ def test_failed_transfer_is_attempted_again(monkeypatch, credited_event):
 def test_failed_event_eventually_succeeds(monkeypatch, credited_event):
     calls = []
 
-    def fails_once(invoice):
+    def fails_once(invoice, **_kwargs):
         calls.append(1)
         if len(calls) == 1:
             raise TransferFailed("sandbox returned 500")
@@ -54,24 +54,24 @@ def test_failed_event_eventually_succeeds(monkeypatch, credited_event):
     monkeypatch.setattr(event_processor, "send_invoice_proceeds", fails_once)
 
     assert process_event(credited_event(event_id="ev-heal")) is ProcessResult.FAILED
-    assert process_event(credited_event(event_id="ev-heal")) is ProcessResult.TRANSFERRED
+    assert process_event(credited_event(event_id="ev-heal")) is ProcessResult.SENT
 
     with session_scope() as session:
         record = event_repository.get(session, "ev-heal")
-    assert record.status == EventStatus.TRANSFERRED
+    assert record.status == EventStatus.SENT
     assert record.transfer_id == "transfer-1"
 
 
 def test_transferred_event_is_never_reprocessed(monkeypatch, credited_event):
     calls = []
 
-    def once(_invoice):
+    def once(_invoice, **_kwargs):
         calls.append(1)
         return _outcome()
 
     monkeypatch.setattr(event_processor, "send_invoice_proceeds", once)
 
-    assert process_event(credited_event(event_id="ev-done")) is ProcessResult.TRANSFERRED
+    assert process_event(credited_event(event_id="ev-done")) is ProcessResult.SENT
     assert process_event(credited_event(event_id="ev-done")) is ProcessResult.DUPLICATE
     assert len(calls) == 1
 
@@ -79,7 +79,7 @@ def test_transferred_event_is_never_reprocessed(monkeypatch, credited_event):
 def test_skipped_event_is_never_reprocessed(monkeypatch, credited_event):
     calls = []
     monkeypatch.setattr(
-        event_processor, "send_invoice_proceeds", lambda i: calls.append(1)
+        event_processor, "send_invoice_proceeds", lambda i, **_k: calls.append(1)
     )
 
     event = credited_event(event_id="ev-skip")
@@ -150,7 +150,7 @@ class TestReconciliationAcknowledgement:
         event = credited_event(event_id="ev-ack")
 
         assert sweep(event, _always_fails) == []
-        assert sweep(event, lambda _i: _outcome()) == ["ev-ack"]
+        assert sweep(event, lambda _i, **_k: _outcome()) == ["ev-ack"]
 
 
 def test_local_sweep_recovers_an_event_the_remote_queue_lost(
@@ -173,7 +173,7 @@ def test_local_sweep_recovers_an_event_the_remote_queue_lost(
 
     calls = []
 
-    def succeeds(invoice):
+    def succeeds(invoice, **_kwargs):
         calls.append(1)
         return _outcome()
 
@@ -182,12 +182,10 @@ def test_local_sweep_recovers_an_event_the_remote_queue_lost(
     summary = reconciliation.sweep_local_ledger(stale_after_minutes=0)
 
     assert calls == [1]
-    assert summary.get("transferred") == 1
+    assert summary.get("sent") == 1
 
     with session_scope() as session:
-        assert event_repository.get(session, "ev-orphan").status == (
-            EventStatus.TRANSFERRED
-        )
+        assert event_repository.get(session, "ev-orphan").status == EventStatus.SENT
 
 
 def test_local_sweep_recovers_a_row_stuck_in_received(monkeypatch, credited_event):
@@ -211,15 +209,13 @@ def test_local_sweep_recovers_a_row_stuck_in_received(monkeypatch, credited_even
     )
     monkeypatch.setattr(reconciliation.starkbank.event, "get", lambda event_id: event)
     monkeypatch.setattr(
-        event_processor, "send_invoice_proceeds", lambda _i: _outcome()
+        event_processor, "send_invoice_proceeds", lambda _i, **_k: _outcome()
     )
 
     reconciliation.sweep_local_ledger(stale_after_minutes=0)
 
     with session_scope() as session:
-        assert event_repository.get(session, "ev-stuck").status == (
-            EventStatus.TRANSFERRED
-        )
+        assert event_repository.get(session, "ev-stuck").status == EventStatus.SENT
 
 
 def test_local_sweep_leaves_fresh_rows_alone(monkeypatch, credited_event):
@@ -247,11 +243,9 @@ def test_local_sweep_leaves_fresh_rows_alone(monkeypatch, credited_event):
 
 def test_local_sweep_ignores_terminal_rows(monkeypatch, credited_event):
     monkeypatch.setattr(
-        event_processor, "send_invoice_proceeds", lambda _i: _outcome()
+        event_processor, "send_invoice_proceeds", lambda _i, **_k: _outcome()
     )
-    assert process_event(credited_event(event_id="ev-final")) is (
-        ProcessResult.TRANSFERRED
-    )
+    assert process_event(credited_event(event_id="ev-final")) is ProcessResult.SENT
 
     monkeypatch.setattr(
         reconciliation.starkbank.event, "query", lambda limit, is_delivered: []
@@ -312,7 +306,7 @@ def test_abandoned_event_is_acknowledged_and_not_retried(monkeypatch, credited_e
 
     attempts = []
 
-    def failing(_invoice):
+    def failing(_invoice, **_kwargs):
         attempts.append(1)
         raise TransferFailed("permanent rejection")
 

@@ -18,6 +18,10 @@ class Base(DeclarativeBase):
 class EventStatus(StrEnum):
     RECEIVED = "received"
     SKIPPED = "skipped"
+    # The Transfer was accepted by the API. Its outcome is still unknown: it
+    # settles asynchronously, and it can still fail.
+    SENT = "sent"
+    # The Transfer reached "success". Only this means the money moved.
     TRANSFERRED = "transferred"
     FAILED = "failed"
     # Past the retry cap. Needs a human, so it is never retried automatically.
@@ -28,6 +32,9 @@ class EventStatus(StrEnum):
 TERMINAL_STATUSES = frozenset(
     {EventStatus.TRANSFERRED, EventStatus.SKIPPED, EventStatus.ABANDONED}
 )
+
+#: Sent but unsettled. Must not be re-sent, must not be counted as done.
+PENDING_STATUSES = frozenset({EventStatus.SENT})
 
 
 class ProcessedEvent(Base):

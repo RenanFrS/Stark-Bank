@@ -37,8 +37,20 @@ class TransferOutcome:
     external_id: str
 
 
-def build_external_id(invoice_id: str) -> str:
+def build_invoice_tag(invoice_id: str) -> str:
+    """Stable across attempts: this is what identifies the payment."""
     return f"{TRANSFER_EXTERNAL_ID_PREFIX}-{invoice_id}"
+
+
+def build_external_id(invoice_id: str, attempt: int = 1) -> str:
+    """Unique per attempt.
+
+    The API refuses a repeated external_id, so reusing it after a failure makes
+    every retry fail as a duplicate. Duplicate protection therefore rests on the
+    local ledger and on the tag lookup below, which both survive a retry.
+    """
+    tag = build_invoice_tag(invoice_id)
+    return tag if attempt <= 1 else f"{tag}-r{attempt}"
 
 
 def compute_net_amount(gross_amount: int, fee_amount: int) -> int:
@@ -50,16 +62,25 @@ def compute_net_amount(gross_amount: int, fee_amount: int) -> int:
     return gross_amount - fee_amount
 
 
-def find_existing_transfer(invoice_id: str):
-    """Return the Transfer already sent for this invoice, or None.
+#: A Transfer in this state moved no money, so it must not block a new attempt.
+DEAD_TRANSFER_STATUSES = frozenset({"failed", "canceled"})
 
-    A lookup failure returns None: refusing to pay because we could not check
-    would strand the money, and the local ledger plus `external_id` still guard
-    against a genuine duplicate.
+
+def find_existing_transfer(invoice_id: str):
+    """Return a live Transfer already sent for this invoice, or None.
+
+    A failed one is ignored on purpose: treating it as proof of payment would
+    report success while the money never left.
+
+    A lookup failure returns None, because refusing to pay when we could not
+    check would strand the money, and `external_id` still guards a real
+    duplicate.
     """
-    tag = build_external_id(invoice_id)
+    tag = build_invoice_tag(invoice_id)
     try:
         for transfer in starkbank.transfer.query(tags=[tag]):
+            if getattr(transfer, "status", None) in DEAD_TRANSFER_STATUSES:
+                continue
             return transfer
     except Exception:
         logger.warning(
@@ -69,7 +90,7 @@ def find_existing_transfer(invoice_id: str):
     return None
 
 
-def send_invoice_proceeds(invoice) -> TransferOutcome:
+def send_invoice_proceeds(invoice, attempt: int = 1) -> TransferOutcome:
     """Create the Transfer for a credited invoice.
 
     Raises TransferSkipped when nothing should be sent, TransferFailed when the
@@ -81,7 +102,8 @@ def send_invoice_proceeds(invoice) -> TransferOutcome:
     gross_amount = int(getattr(invoice, "amount", 0) or 0)
     fee_amount = int(getattr(invoice, "fee", 0) or 0)
     net_amount = compute_net_amount(gross_amount, fee_amount)
-    external_id = build_external_id(invoice_id)
+    external_id = build_external_id(invoice_id, attempt)
+    invoice_tag = build_invoice_tag(invoice_id)
 
     if net_amount <= 0:
         raise TransferSkipped(
@@ -117,7 +139,7 @@ def send_invoice_proceeds(invoice) -> TransferOutcome:
         name=settings.transfer_name,
         external_id=external_id,
         description=f"Invoice {invoice_id} proceeds",
-        tags=BASE_TAGS + [external_id],
+        tags=BASE_TAGS + [invoice_tag],
     )
 
     created = _create_with_retry(transfer, invoice_id, external_id)

@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
-from app.db.models import TERMINAL_STATUSES, EventStatus, ProcessedEvent
+from app.db.models import PENDING_STATUSES, TERMINAL_STATUSES, EventStatus, ProcessedEvent
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +86,11 @@ def _resolve_collision(
         # Reported as exhausted rather than as a duplicate, so an event needing
         # manual review keeps saying so on every pass instead of going quiet.
         return ClaimResult.EXHAUSTED
+
+    if existing.status in PENDING_STATUSES:
+        # A transfer is already in flight for this event. Re-sending would risk
+        # paying twice; the settlement sweep resolves it.
+        return ClaimResult.DONE
 
     if existing.status in TERMINAL_STATUSES:
         logger.info(
@@ -168,6 +173,64 @@ def mark_failed(session: Session, event_id: str, reason: str) -> None:
 
 def mark_abandoned(session: Session, event_id: str, reason: str) -> None:
     _update(session, event_id, status=EventStatus.ABANDONED, detail=reason)
+
+
+def mark_sent(
+    session: Session,
+    event_id: str,
+    transfer_id: str,
+    gross_amount: int,
+    fee_amount: int,
+    net_amount: int,
+) -> None:
+    """Record that the API accepted the Transfer. Not that it completed."""
+    _update(
+        session,
+        event_id,
+        status=EventStatus.SENT,
+        transfer_id=transfer_id,
+        gross_amount=gross_amount,
+        fee_amount=fee_amount,
+        net_amount=net_amount,
+        detail=None,
+    )
+
+
+def settle_transfer(
+    session: Session, transfer_id: str, succeeded: bool, reason: str
+) -> bool:
+    """Resolve the row waiting on this transfer. Returns False if none is."""
+    record = session.execute(
+        select(ProcessedEvent).where(ProcessedEvent.transfer_id == transfer_id)
+    ).scalar_one_or_none()
+    if record is None:
+        return False
+    if record.status == EventStatus.TRANSFERRED:
+        return True
+
+    record.status = EventStatus.TRANSFERRED if succeeded else EventStatus.FAILED
+    record.detail = None if succeeded else reason
+    session.commit()
+    return True
+
+
+def pending_transfers(
+    session: Session, stale_after_minutes: int, limit: int = 100
+) -> list[tuple[str, str]]:
+    """(event_id, transfer_id) for sends still awaiting an outcome."""
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=stale_after_minutes)
+    rows = session.execute(
+        select(ProcessedEvent.event_id, ProcessedEvent.transfer_id, ProcessedEvent.updated_at)
+        .where(ProcessedEvent.status == EventStatus.SENT)
+        .where(ProcessedEvent.transfer_id.is_not(None))
+        .order_by(ProcessedEvent.updated_at)
+        .limit(limit)
+    ).all()
+    return [
+        (event_id, transfer_id)
+        for event_id, transfer_id, updated_at in rows
+        if _as_utc(updated_at) <= cutoff
+    ]
 
 
 def mark_transferred(
